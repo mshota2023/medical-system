@@ -1,0 +1,62 @@
+# Build ステージ: イメージのビルド・push・脆弱性判定・タスク定義の登録
+# 環境変数（ECR_REPOSITORY_URI 等）は Terraform（modules/cicd/pipeline）が CodeBuild に設定する
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  install:
+    commands:
+      - command -v envsubst >/dev/null || dnf install -y gettext
+
+  pre_build:
+    commands:
+      - set -eo pipefail
+      - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+      - REGISTRY="${ECR_REPOSITORY_URI%%/*}"
+      - REPOSITORY_NAME="${ECR_REPOSITORY_URI#*/}"
+      - aws ecr get-login-password | docker login --username AWS --password-stdin "${REGISTRY}"
+
+  build:
+    commands:
+      # タグは不変（IMMUTABLE）のため、同じコミットの再実行時はビルドを省略する
+      - |
+        if aws ecr describe-images --repository-name "${REPOSITORY_NAME}" --image-ids imageTag="${IMAGE_TAG}" >/dev/null 2>&1; then
+          echo "Image ${IMAGE_TAG} already exists. Skip build."
+        else
+          docker build -t "${ECR_REPOSITORY_URI}:${IMAGE_TAG}" .
+          docker push "${ECR_REPOSITORY_URI}:${IMAGE_TAG}"
+        fi
+
+      # 脆弱性スキャン結果の判定（CRITICAL があれば停止）
+      - aws ecr wait image-scan-complete --repository-name "${REPOSITORY_NAME}" --image-id imageTag="${IMAGE_TAG}"
+      - |
+        CRITICAL=$(aws ecr describe-image-scan-findings \
+          --repository-name "${REPOSITORY_NAME}" --image-id imageTag="${IMAGE_TAG}" \
+          --query 'imageScanFindings.findingSeverityCounts.CRITICAL' --output text)
+        if [ "${CRITICAL}" != "None" ] && [ "${CRITICAL}" -gt 0 ]; then
+          echo "CRITICAL vulnerabilities found: ${CRITICAL}"
+          exit 1
+        fi
+
+  post_build:
+    commands:
+      # タグではなく digest でタスク定義に固定する（検証したイメージそのものをデプロイする）
+      - |
+        IMAGE_DIGEST=$(aws ecr describe-images --repository-name "${REPOSITORY_NAME}" \
+          --image-ids imageTag="${IMAGE_TAG}" --query 'imageDetails[0].imageDigest' --output text)
+        export IMAGE_URI="${ECR_REPOSITORY_URI}@${IMAGE_DIGEST}"
+      - export AWS_REGION="${AWS_DEFAULT_REGION}"
+      - envsubst < taskdef.json > taskdef.rendered.json
+      - |
+        TASK_DEFINITION_ARN=$(aws ecs register-task-definition \
+          --cli-input-json file://taskdef.rendered.json \
+          --query 'taskDefinition.taskDefinitionArn' --output text)
+        echo "${TASK_DEFINITION_ARN}" > taskdef-arn.txt
+        echo "Registered ${TASK_DEFINITION_ARN}"
+
+artifacts:
+  files:
+    - taskdef-arn.txt
+    - taskdef.rendered.json

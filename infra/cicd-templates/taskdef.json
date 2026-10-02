@@ -1,0 +1,37 @@
+{
+  "family": "${TASK_FAMILY}",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "${EXECUTION_ROLE_ARN}",
+  "taskRoleArn": "${TASK_ROLE_ARN}",
+  "runtimePlatform": {
+    "operatingSystemFamily": "LINUX",
+    "cpuArchitecture": "X86_64"
+  },
+  "containerDefinitions": [
+    {
+      "name": "${CONTAINER_NAME}",
+      "image": "${IMAGE_URI}",
+      "essential": true,
+      "readonlyRootFilesystem": true,
+      "user": "1000",
+      "portMappings": [
+        { "containerPort": ${CONTAINER_PORT}, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "APP_ENV", "value": "${ENVIRONMENT}" }
+      ],
+      "secrets": [],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "${APP_LOG_GROUP}",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "${CONTAINER_NAME}"
+        }
+      }
+    }
+  ]
+}

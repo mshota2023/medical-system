@@ -1,0 +1,18 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# 環境ごとの backend 設定（.example をコピーして作成）
+backend.hcl
+
+# terraform.tfvars は機密情報を書かない前提でコミットする
+
+.DS_Store

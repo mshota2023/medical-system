@@ -1,0 +1,43 @@
+# Deploy ステージ: サービスを新しいタスク定義に更新し、ECS ネイティブ Blue/Green の完了まで監視する
+# Blue/Green の挙動（テストリスナー・ベイク時間・自動ロールバック）は ECS サービス側（Terraform）で設定済み
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  build:
+    commands:
+      - set -eo pipefail
+      - TASK_DEFINITION_ARN=$(cat "${CODEBUILD_SRC_DIR_BuildOutput}/taskdef-arn.txt")
+      - STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      - |
+        aws ecs update-service --cluster "${ECS_CLUSTER}" --service "${ECS_SERVICE}" \
+          --task-definition "${TASK_DEFINITION_ARN}" >/dev/null
+        echo "Deployment started: ${TASK_DEFINITION_ARN}"
+
+      # 今回の update-service で開始されたデプロイを特定する
+      - |
+        for i in $(seq 1 30); do
+          DEPLOYMENT_ARN=$(aws ecs list-service-deployments --cluster "${ECS_CLUSTER}" --service "${ECS_SERVICE}" \
+            --created-at "after=${STARTED_AT}" --query 'serviceDeployments[0].serviceDeploymentArn' --output text)
+          [ "${DEPLOYMENT_ARN}" != "None" ] && break
+          sleep 10
+        done
+        [ "${DEPLOYMENT_ARN}" != "None" ] || { echo "Deployment not found"; exit 1; }
+        echo "${DEPLOYMENT_ARN}" > deployment-arn.txt
+
+      # ベイク時間を含めて完了まで待つ（ロールバックした場合は失敗扱い）
+      - |
+        DEPLOYMENT_ARN=$(cat deployment-arn.txt)
+        while true; do
+          STATUS=$(aws ecs describe-service-deployments --service-deployment-arns "${DEPLOYMENT_ARN}" \
+            --query 'serviceDeployments[0].status' --output text)
+          echo "$(date -u +%H:%M:%S) ${STATUS}"
+          case "${STATUS}" in
+            SUCCESSFUL) break ;;
+            ROLLBACK_*|STOPPED|STOP_REQUESTED) echo "Deployment failed: ${STATUS}"; exit 1 ;;
+          esac
+          sleep 30
+        done
+        echo "Deployment succeeded."
