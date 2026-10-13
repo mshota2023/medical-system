@@ -52,15 +52,130 @@ AWS 固有のドライバー（ENA・NVMe・PV）は Windows Update では配信
 | stg | prod の定期メンテナンスより前 | prod と同じ手順の予行。切り戻し（[5 章](#5-切り戻し手順方式-b)）の所要時間もここで測る |
 | prod | 定期メンテナンスの時間帯 | 本番適用。切り戻しまで含めて時間内に終える |
 
-### 4.2 定期メンテナンス内の作業
+### 4.2 更新前の確認
+
+AWS ドライバー・エージェントの更新前に、次の2段階で確認する。
+
+| 段階 | 時期 | 目的 |
+|---|---|---|
+| [4.2.1 事前確認](#421-事前確認) | 定期メンテナンスの数日前（prod の承認依頼の前） | 適用するバージョンが妥当かを確かめる。結果は承認依頼に添付する |
+| [4.2.2 直前確認](#422-直前確認) | 定期メンテナンス当日、事前バックアップの前 | 更新を始めてよい状態かを確かめ、更新前の状態を記録する |
+
+インスタンス内のコマンド（PowerShell）は、Run Command の `AWS-RunPowerShellScript` で実行する。出力が S3 に残り、作業記録になるため。調査などで対話的に操作する場合は Session Manager を使う。
+
+```sh
+# commands.json に {"commands": ["<PowerShell の1行目>", "<2行目>", ...]} の形で記述する
+aws ssm send-command --instance-ids <インスタンス ID> \
+  --document-name AWS-RunPowerShellScript \
+  --parameters file://commands.json \
+  --output-s3-bucket-name <ログ用バケット> --output-s3-key-prefix patch/<実施日>
+
+# 結果を確認する
+aws ssm get-command-invocation --command-id <コマンド ID> --instance-id <インスタンス ID>
+```
+
+#### 4.2.1 事前確認
+
+| # | 確認項目 | 確認方法 | 判断基準 |
+|---|---|---|---|
+| 1 | 現在のバージョン | 下記「バージョン確認スクリプト」 | prod の現在のバージョンが、stg の予行前のバージョンと同じであること（違うと予行の意味が薄れる） |
+| 2 | インスタンスの種類 | 下記「インスタンスの種類」 | Nitro 系なら ENA・NVMe、Xen 系なら PV が更新対象（[2 章](#2-対象)） |
+| 3 | 適用するバージョンが入手できるか | 下記「Distributor のバージョン一覧」 | [4.4](#44-環境ごとの適用) で決めたバージョン（stg で検証した版）が一覧にあること |
+| 4 | リリースノート | ENA・NVMe・EC2Launch v2 のバージョン履歴ページ、SSM Agent・CloudWatch Agent のリリースノート | 対応 OS に現在の Windows Server のバージョンが含まれること。既知の問題・再起動の要否を確認する |
+| 5 | OS のバージョン | `Get-ComputerInfo -Property OsName, OsVersion, OsBuildNumber` | #4 の対応 OS に含まれること |
+| 6 | 未適用のパッチ | 下記「未適用パッチの確認」 | 適用されるパッチの一覧を、承認依頼に添付する |
+| 7 | 保留中の再起動 | 下記「保留中の再起動の確認」 | 保留中の再起動がないこと。ある場合は、定期メンテナンスより前に再起動を済ませる |
+| 8 | ベンダーのサポート | PACS 関連ソフトのベンダーへの確認 | 適用するバージョンがサポート範囲内であること |
+
+**バージョン確認スクリプト**（[4.2.2](#422-直前確認) でも使う）
+
+```powershell
+# AWS ドライバー（ENA・NVMe・PV）
+# NVMe が "Standard NVM Express Controller" と表示される場合は、AWS NVMe ドライバーが入っていない
+Get-CimInstance Win32_PnPSignedDriver |
+  Where-Object { $_.DeviceName -match 'AWS|Amazon|Elastic Network Adapter|NVM' } |
+  Select-Object DeviceName, Manufacturer, DriverVersion, DriverDate |
+  Format-Table -AutoSize
+
+# EC2Launch v2
+& "$env:ProgramFiles\Amazon\EC2Launch\EC2Launch.exe" version
+
+# SSM Agent
+(Get-Item "$env:ProgramFiles\Amazon\SSM\amazon-ssm-agent.exe").VersionInfo.ProductVersion
+
+# CloudWatch Agent（出力の version を確認する）
+& "$env:ProgramFiles\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1" -a status
+```
+
+SSM Agent のバージョンは、インスタンスに入らずに AWS CLI でも確認できる。
+
+```sh
+aws ssm describe-instance-information \
+  --filters Key=InstanceIds,Values=<インスタンス ID> \
+  --query "InstanceInformationList[0].[AgentVersion,IsLatestVersion,PingStatus,PlatformName,PlatformVersion]"
+```
+
+**インスタンスの種類**
+
+```sh
+# インスタンスタイプと ENA の有効化状態
+aws ec2 describe-instances --instance-ids <インスタンス ID> \
+  --query "Reservations[0].Instances[0].[InstanceType,EnaSupport]"
+
+# ハイパーバイザー（nitro または xen）
+aws ec2 describe-instance-types --instance-types <インスタンスタイプ> \
+  --query "InstanceTypes[0].Hypervisor"
+```
+
+**Distributor のバージョン一覧**（パッケージ名は [2 章](#2-対象) の表を参照）
+
+```sh
+aws ssm list-document-versions --name AwsEnaNetworkDriver \
+  --query "DocumentVersions[].[VersionName,CreatedDate,Status]" --output table
+```
+
+**未適用パッチの確認**
+
+Run Command `AWS-RunPatchBaseline` を `Operation=Scan` で実行すると、パッチを入れずに未適用の一覧だけを集める。
+
+```sh
+aws ssm send-command --instance-ids <インスタンス ID> \
+  --document-name AWS-RunPatchBaseline --parameters Operation=Scan
+
+aws ssm describe-instance-patches --instance-id <インスタンス ID> \
+  --filters Key=State,Values=Missing \
+  --query "Patches[].[KBId,Title,Severity]" --output table
+```
+
+**保留中の再起動の確認**
+
+```powershell
+# どれか1つでも True なら、保留中の再起動がある
+Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+```
+
+#### 4.2.2 直前確認
+
+[4.3](#43-定期メンテナンス内の作業) の順序 2 で行う。
+
+| # | 確認項目 | 確認方法 | 判断基準 |
+|---|---|---|---|
+| 1 | SSM で接続できるか | `describe-instance-information` の `PingStatus`（[4.2.1](#421-事前確認)） | `Online` であること。そうでない場合は更新を中止する（更新後に SSM で操作できず、切り戻しの手段が限られるため） |
+| 2 | 保留中の再起動 | [4.2.1](#421-事前確認) の「保留中の再起動の確認」 | ないこと。ある場合は再起動してから確認し直す（事前バックアップの再起動で、意図しない更新が入るのを防ぐため） |
+| 3 | C ドライブの空き容量 | `Get-PSDrive C \| Select-Object Used, Free` | パッチの適用に十分な空きがあること（目安は stg の実績で決める） |
+| 4 | 更新前のバージョンを記録 | [4.2.1](#421-事前確認) の「バージョン確認スクリプト」 | 事前確認の結果から変わっていないこと。出力は切り戻し後の確認（[5.3](#53-手段-1ルートボリュームの置換)）に使う |
+| 5 | 適用済みの KB を記録 | `Get-HotFix \| Sort-Object InstalledOn \| Select-Object HotFixID, InstalledOn` | 出力を残す。切り戻し後の確認と、KB のアンインストール（[5.4](#54-手段-2個別の戻し)）に使う |
+
+### 4.3 定期メンテナンス内の作業
 
 prod では、切り戻しに必要な時間を残して「切り戻し判断の期限」を決めておく（例：終了時刻 −（stg で測った切り戻しの所要時間 + 余裕））。
 
 | 順序 | 作業 | 使う機能・内容 |
 |---|---|---|
 | 1 | 業務の停止 | モダリティ・院内ゲートウェイからの DICOM 送信を止め、PACS 関連サービスを停止する |
-| 2 | 事前バックアップ | `AWS-CreateImage`（`NoReboot=false`：インスタンスを一度停止して取得し、ファイルシステムの整合性を保つ）。AMI が `available` になったことを確認してから次に進む |
-| 3 | 更新前の状態を記録 | 適用済みの KB 一覧、ドライバー・エージェントのバージョン（SSM Inventory または Run Command で取得） |
+| 2 | 直前確認と、更新前の状態の記録 | [4.2.2 直前確認](#422-直前確認)の項目を確認する。基準を満たさない場合は更新を中止する |
+| 3 | 事前バックアップ | `AWS-CreateImage`（`NoReboot=false`：インスタンスを一度停止して取得し、ファイルシステムの整合性を保つ）。AMI が `available` になったことを確認してから次に進む |
 | 4 | AWS ドライバー・エージェントの更新 | Run Command `AWS-ConfigureAWSPackage`（`version` を指定して固定する） |
 | 5 | Windows パッチの適用 | Run Command `AWS-RunPatchBaseline` |
 | 6 | 再起動と正常性確認 | 「[5.1 切り戻しの判断基準](#51-切り戻しの判断基準)」の項目を確認する |
@@ -68,7 +183,7 @@ prod では、切り戻しに必要な時間を残して「切り戻し判断の
 
 業務（DICOM 受信）の再開は、判定で「問題なし」となってから行う。再開後に切り戻すと、バックアップ以降に受信したデータが失われるため。
 
-### 4.3 環境ごとの適用
+### 4.4 環境ごとの適用
 
 | 環境 | 適用するバージョン | 承認 |
 |---|---|---|
@@ -76,12 +191,13 @@ prod では、切り戻しに必要な時間を残して「切り戻し判断の
 | stg | dev で問題がなかった版 | 不要 |
 | prod | stg で検証した版（`version` を固定する） | 変更作成者以外の承認者が承認する（アプリの本番デプロイと同じ職務分離） |
 
-### 4.4 記録として残すもの
+### 4.5 記録として残すもの
 
 - Maintenance Window の実行履歴
 - Run Command の出力（S3 または CloudWatch Logs に出力する）
 - CloudTrail（誰がいつ実行したか）
 - 適用したドライバー・パッチのバージョンと承認者
+- 事前確認・直前確認（[4.2](#42-更新前の確認)）の結果
 - 事前バックアップの AMI ID・スナップショット ID
 - 切り戻しを行った場合は、その判断理由・実施者・使った手段・結果
 
@@ -132,7 +248,7 @@ prod では、切り戻しに必要な時間を残して「切り戻し判断の
      --filters Name=instance-id,Values=<インスタンス ID>
    ```
 
-4. 「[5.1 切り戻しの判断基準](#51-切り戻しの判断基準)」の項目を確認し、ドライバー・KB が更新前の状態（[4.2](#42-定期メンテナンス内の作業) の順序 3 で記録したもの）に戻ったことを確認する
+4. 「[5.1 切り戻しの判断基準](#51-切り戻しの判断基準)」の項目を確認し、ドライバー・KB が更新前の状態（[4.2.2](#422-直前確認) で記録したもの）に戻ったことを確認する
 5. 業務を再開する
 6. `terraform plan` を実行し、意図しない差分がないことを確認する
 
@@ -153,7 +269,7 @@ SSM の Run Command で実行する。
 
 ### 5.5 切り戻し後の対応
 
-- 切り戻しの記録を残す（[4.4](#44-記録として残すもの)）
+- 切り戻しの記録を残す（[4.5](#45-記録として残すもの)）
 - 置換前のルートボリュームから原因を調査する。調査用のインスタンスに付けて、イベントログや更新履歴を確認する
 - 調査が終わったら、置換前のボリュームを削除する
 - 定期メンテナンスの時間を延長する場合は、医療機関に連絡する（連絡の手順は U17 の運用手順書で決める）
@@ -168,7 +284,7 @@ SSM の Run Command で実行する。
 ## 6. 注意事項
 
 - **事前バックアップは必須**。ドライバー更新に失敗すると起動しない、または通信できなくなり、SSM で操作できなくなる。事前のスナップショットが唯一の復旧手段になる場合がある
-- **切り戻しは stg で事前に試す**。所要時間を測り、prod の切り戻し判断の期限（[4.2](#42-定期メンテナンス内の作業)）を決める根拠にする
+- **切り戻しは stg で事前に試す**。所要時間を測り、prod の切り戻し判断の期限（[4.3](#43-定期メンテナンス内の作業)）を決める根拠にする
 - **復元したボリュームは、最初の読み込みが遅い**。スナップショットから作った EBS ボリュームは、各ブロックへの初回アクセス時に S3 から読み込まれるため。業務再開前に、主要な処理の応答時間を確認する
 - **切り戻しに必要な権限を事前に確認する**。作業者の権限セットで `ec2:CreateReplaceRootVolumeTask` 等が実行できることを、stg で確認しておく
 - **ENA ドライバーの更新中は通信が数秒切れる**。定期メンテナンスの時間帯に行い、モダリティからの DICOM 送信を止める
@@ -182,7 +298,7 @@ SSM の Run Command で実行する。
 | 観点 | 対応 |
 |---|---|
 | 脆弱性対策（パッチの計画的な適用） | 定期更新（方式 A または B）と、緊急適用の基準を定める |
-| 変更管理の記録 | 「[4.4 記録として残すもの](#44-記録として残すもの)」を保存する |
+| 変更管理の記録 | 「[4.5 記録として残すもの](#45-記録として残すもの)」を保存する |
 | 監査証跡の改ざん防止 | CloudTrail は Object Lock 付きのバケットに保存済み（[infra/README.md](../infra/README.md#注意事項)） |
 | バックアップ・復旧 | 適用前に AMI を取得し、切り戻し手順（[5 章](#5-切り戻し手順方式-b)）を stg で事前に試す |
 | 保存データの暗号化 | 事前バックアップの AMI・スナップショットは KMS で暗号化する |
