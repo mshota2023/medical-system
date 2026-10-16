@@ -73,6 +73,30 @@
 
 フェデレーションでは、パスワードの管理や MFA は IdP 側で行う。医療機関が Entra ID 等で MFA を必須にしていれば、サービス側で MFA を持たなくても MFA の要件を満たせる。
 
+#### 補足: Microsoft Entra ID とは
+
+Microsoft Entra ID は、会社・病院などの組織が職員の ID を一括管理するための Microsoft のクラウドサービス。2023年に Azure Active Directory（Azure AD）から名称が変わった。
+Microsoft 365（Teams・Outlook 等）を業務で使っている組織は、多くの場合 Entra ID で職員の ID を管理している。
+
+個人の Microsoft アカウントとは別物である。
+
+| 項目 | Microsoft アカウント（個人） | Microsoft Entra ID（組織） |
+|---|---|---|
+| ID の例 | `taro@outlook.com`、`@hotmail.com` 等 | `taro@hospital.example.jp` 等、組織のドメイン |
+| 作成者 | 本人が自分で作成する | 組織の管理者が職員ごとに発行する |
+| 主な用途 | 個人向けの Outlook・OneDrive・Xbox 等 | 業務用の Microsoft 365 や、連携した他社サービス |
+| 退職時 | 本人のものなので残る | 管理者がすぐに無効化できる |
+| MFA | 本人が設定するかどうかによる | 管理者が全員に必須にできる |
+
+病院が Entra ID で職員の ID を管理している場合、本サービスと SAML / OIDC で連携すると次のことができる。
+
+- 職員は普段使っている業務用アカウントでログインできる（SSO）
+- 退職者のアカウントを病院側で無効化すれば、本サービスにもログインできなくなる
+- 病院側で MFA を必須にしておけば、本サービス側で MFA を持たなくてもガイドラインの要件を満たせる
+
+Google にも同じ関係があり、個人の Google アカウント（`@gmail.com`）に対して、組織版が Google Workspace である。
+本資料で「個人の Google・Microsoft アカウント（ソーシャルログイン）は不向き」「Entra ID・Google Workspace との連携は有力」と分けているのは、この個人向けか組織向けかの違いによる。
+
 ### 3.5 クライアント証明書（mTLS）
 
 - 端末に電子証明書を入れ、TLS の接続時に端末を認証する。「所持」の要素になる
