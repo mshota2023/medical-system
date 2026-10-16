@@ -70,6 +70,23 @@
 | PACS WATARU | 国内の東西2拠点のデータセンターに二重保管 | 記載なし | 記載なし | 記載なし |
 | LSC PACS Xronos | 記載なし | 記載なし | 記載なし | 記載なし |
 
+### 3.4 利用者の認証
+
+Google・Microsoft アカウントでのログインや、SSO（SAML / OIDC）に対応すると公開しているサービスは、今回の調査では見つからなかった。
+記載がないことは非対応を意味しない。大規模病院向けの個別案件で、病院の Microsoft Entra ID 等と連携している可能性もあるため、各社に確認する。
+
+| サービス | 認証方式 | Google / Microsoft アカウント・SSO | 多要素認証（MFA） |
+|---|---|---|---|
+| NOBORI | 記載なし | 記載なし | 記載なし |
+| LOOKREC | 記載なし | 記載なし | 記載なし |
+| Climis | 院外参照の端末にクライアント証明書を導入して接続 | 記載なし | 記載なし |
+| SonicDICOM PACS Cloud | 登録フォームでサービス専用アカウントを発行し、ブラウザでログイン ※学会の利用説明書 | 記載なし | 記載なし |
+| PACS WATARU | 記載なし | 記載なし | 記載なし |
+| LSC PACS Xronos | 記載なし | 記載なし | 記載なし |
+
+厚生労働省ガイドライン第7.0版では、クライアント端末のアプリケーションログインにも MFA の採用が求められる（令和9年4月1日時点で稼働が想定されるシステムの新規導入・更改時に原則採用。困難な場合は経過措置あり）。
+Google・Microsoft アカウント等の外部 IdP に認証を任せると MFA を満たしやすいため、SSO と MFA の対応をあわせて確認する。
+
 ## 4. サービス別の詳細
 
 ### 4.1 NOBORI（PSP）
@@ -131,6 +148,7 @@
 | 3省2ガイドライン | 厚生労働省ガイドライン第7.0版、総務省・経済産業省ガイドライン第2.0版への対応状況。サービス仕様適合開示書の提供有無 |
 | セキュリティ認証 | ISMS（ISO/IEC 27001）、ISMS クラウドセキュリティ（ISO/IEC 27017）、プライバシーマーク等 |
 | 通信 | VPN か インターネット + TLS か。専用回線の要否 |
+| 利用者の認証 | Google・Microsoft アカウント（Microsoft Entra ID 等）や SAML / OIDC による SSO の可否、MFA への対応、アカウントロック等のパスワード要件（厚生労働省ガイドライン第7.0版 システム運用編14章） |
 | 解約時のデータ | 画像の返却方法（DICOM 形式での一括エクスポート）、費用、期間。他社 PACS への移行実績 |
 | 連携 | 使っている電子カルテ・RIS との連携実績と方式（患者 ID 起動、URL 連携、HL7 等） |
 | ビューア | 医療機器認証の有無、対応端末、読影用途（高精細モニタ・マンモグラフィ）に使えるか |
@@ -150,3 +168,4 @@
 - [AWS HealthImaging の紹介（AWS ブログ）](https://aws.amazon.com/jp/blogs/news/introducing-aws-healthimaging)
 - [Exa Enterprise × AWS HealthImaging 事例（Konica Minolta Healthcare Americas）](https://healthcare.konicaminolta.us/sites/default/files/2026-03/Exa_Enterprise_AWS_HealthImaging_Case_Study_M2442_0326_RevA.pdf)
 - [ITreview クラウドPACS 比較](https://www.itreview.jp/compares/climis_vs_nobori)
+- [日本乳癌検診学会 クラウドPACS 利用説明書（2024年10月版、SonicDICOM PACS Cloud の利用手順）](https://site2.convention.co.jp/jabcs2024/posicon/CloudPACS_2024_1105.pdf)
