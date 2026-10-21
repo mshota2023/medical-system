@@ -238,6 +238,9 @@ stg・prd は毎月の作業日時が変わるため、cron の定期スケジ�
 
 - Maintenance Window のスケジュールには、cron 式・rate 式に加えて、1回だけ実行するタイムスタンプ（`at(YYYY-MM-DDThh:mm:ss)`）を指定できる（[AWS 公式：Reference: Cron and rate expressions for Systems Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/reference-cron-and-rate-expressions.html) の「Single-run schedules」と、`create-maintenance-window` の CLI 例）
 - 同ドキュメントには「タイムスタンプは UTC 形式」とある一方、CLI 例では `--schedule-timezone` と組み合わせている。`schedule_timezone = "Asia/Tokyo"` が `at()` に効くかは、stg で作成後に次回の実行予定（`aws ssm get-maintenance-window --window-id <ID> --query NextExecutionTime`）を見て確認する
+- 実行が終わった Window は削除されず、管理画面（Maintenance Windows の一覧）に残る。次回の実行予定がない状態で残るだけで、再び実行されることはない
+- Window は環境ごとに1つとし、毎月 `terraform.tfvars` の日時を書き換えて同じ Window のスケジュールを更新する（毎月新しい Window を作らない）。過去の Window が一覧にたまらず、実行履歴も1つの Window にまとまる
+- Window の実行履歴の保持期間は限られる（AWS のブログでは30日間と説明されているが、公式ドキュメントでは要確認）。長期の記録は、S3 に出力した Run Command の結果と CloudTrail で残す（[9 章](#9-記録として残すもの)）
 - `at()` の扱いに不安がある場合は、年まで指定した cron 式（例：`cron(0 22 18 11 ? 2026)`）でも1回だけの実行になる。cron 式は `schedule_timezone` に従う
 
 **推奨：prd・stg とも案1 を基本とし、案2 は緊急適用と再実行の手段として手順書に用意する。**
