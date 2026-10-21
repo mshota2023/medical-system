@@ -43,6 +43,7 @@ EC2 で稼働する Windows Server に、SSM Patch Manager のパッチベース
 |---|---|---|---|
 | 適用するパッチ | 公開されたものをすぐに承認（`ApproveAfterDays=0`） | 締め日までに公開されたもの（`ApproveUntilDate=<締め日>`） | stg と同じ締め日 |
 | 実行のきっかけ | 定期の Maintenance Window（毎月固定） | 毎月の作業日時（[7 章](#7-stgprd-の起動方式の比較)で比較） | stg と同じ |
+| 適用の並列度 | 対象の全台に並列で適用（`MaxConcurrency=100%`、[6.3](#63-並列での適用)） | 同左 | 同左 |
 | 再起動 | 自動（`RebootOption=RebootIfNeeded`） | 人が行う（`RebootOption=NoReboot` で適用し、再起動は別に実施） | stg と同じ |
 | 承認 | 不要 | 不要 | 変更作成者以外の承認者が承認する（[driver-patch 4.4](./windows-ec2-driver-patch.md#44-環境ごとの適用) と同じ職務分離） |
 
@@ -119,7 +120,7 @@ stg と prd で **同じ締め日** を使うことで、stg で検証したパ�
 |---|---|
 | スケジュール | `cron(0 3 ? * TUE#2 *)`、`ScheduleOffset=2`、タイムゾーン `Asia/Tokyo`（第2火曜の2日後、木曜 3:00 に実行） |
 | タスク | `AWS-RunPatchBaseline`（`Operation=Install`、`RebootOption=RebootIfNeeded`） |
-| 同時実行 | 台数が少ないうちは全台同時でよい |
+| 同時実行 | 全台に並列で適用する（`MaxConcurrency=100%`、`MaxErrors` は [6.3](#63-並列での適用)） |
 
 - Patch Tuesday のパッチは日本時間の水曜未明に公開されるため、オフセットで公開後に実行する
 - 「第2水曜」（`WED#2`）は、月によっては Patch Tuesday より前になるため使わない（1日が水曜の月）
@@ -141,7 +142,7 @@ stg と prd で **同じ締め日** を使うことで、stg で検証したパ�
 | 1 | 締め日と作業日時の設定 | 各環境の `terraform.tfvars` で締め日と作業日時（[7 章](#7-stgprd-の起動方式の比較)の案1の場合）を更新し、PR を作成する。prd は変更作成者以外が承認する |
 | 2 | 事前の Scan | `AWS-RunPatchBaseline`（`Operation=Scan`）を実行し、適用される KB の一覧を取る。prd では stg で適用した一覧と一致することを確認し、承認依頼に添付する |
 | 3 | 事前作業 | [driver-patch 4.3](./windows-ec2-driver-patch.md#43-定期メンテナンス内の作業) の順序1〜4（業務の停止、直前確認、事前バックアップ、ドライバー更新） |
-| 4 | パッチの適用 | `AWS-RunPatchBaseline`（`Operation=Install`、`RebootOption=NoReboot`） |
+| 4 | パッチの適用 | `AWS-RunPatchBaseline`（`Operation=Install`、`RebootOption=NoReboot`）。対象の全台に並列で適用する（[6.3](#63-並列での適用)） |
 | 5 | 適用結果の確認 | 失敗した KB がないこと、再起動待ちの KB を確認する（下記コマンド） |
 | 6 | 再起動 | 人が実行する（下記コマンド） |
 | 7 | 事後の Scan | `Operation=Scan` を再度実行し、コンプライアンスを更新する。再起動待ち・未適用が残っていないことを確認する |
@@ -175,6 +176,45 @@ aws ssm send-command --instance-ids <インスタンス ID> \
   --output-s3-bucket-name <ログ用バケット> --output-s3-key-prefix patch/<実施日>
 ```
 
+### 6.3 並列での適用
+
+Windows Update の適用（Scan・Install）は、パッチグループの全台に対して並列で実行する。1台ずつ順に行うと、台数に比例して作業時間が延びるため。
+
+| 設定 | 値 | 説明 |
+|---|---|---|
+| 対象の指定 | パッチグループのタグ（`tag:Patch Group = pacs-<env>-windows`） | インスタンス ID を並べず、タグで全台を一度に指定する。台数が増えても手順・設定を変えずに済む |
+| 同時実行数（`MaxConcurrency`） | `100%` | 対象の全台で同時に実行する |
+| 許容エラー数（`MaxErrors`） | `100%` | 一部の台で失敗しても、残りの台の適用を止めない。失敗した台は、適用後に個別に確認して再実行する（[6.2](#62-作業の流れ) 順序5） |
+
+Maintenance Window（dev、および [7 章](#7-stgprd-の起動方式の比較)の案1）では、タスクの `MaxConcurrency`・`MaxErrors` に上記を設定する。手動で実行する場合（案2）は次のコマンドを使う。
+
+```sh
+# 事前・事後の Scan（並列）
+aws ssm send-command --document-name AWS-RunPatchBaseline \
+  --targets "Key=tag:Patch Group,Values=pacs-<env>-windows" \
+  --max-concurrency 100% --max-errors 100% \
+  --parameters Operation=Scan \
+  --output-s3-bucket-name <ログ用バケット> --output-s3-key-prefix patch/<実施日>
+
+# 適用（並列、再起動しない）
+aws ssm send-command --document-name AWS-RunPatchBaseline \
+  --targets "Key=tag:Patch Group,Values=pacs-<env>-windows" \
+  --max-concurrency 100% --max-errors 100% \
+  --parameters Operation=Install,RebootOption=NoReboot \
+  --output-s3-bucket-name <ログ用バケット> --output-s3-key-prefix patch/<実施日>
+
+# 台ごとの結果を確認する
+aws ssm list-command-invocations --command-id <コマンド ID> \
+  --query "CommandInvocations[].[InstanceId,Status]" --output table
+```
+
+並列で適用する場合の注意点。
+
+- **事前作業は全台分を済ませてから適用する**。業務の停止と事前バックアップ（[6.2](#62-作業の流れ) 順序3）は、対象の全台で完了していることを確認してから、適用を始める
+- **再起動も全台を並列で行ってよい**。stg・prd は業務を止めた状態で作業するため。冗長化した構成（同じ役割の台が複数）で業務を止めずに作業する場合は、再起動を役割ごとに分けて順に行う（パッチの適用は並列のままでよい）
+- **パッチのダウンロードが集中する**。全台が同時に Windows Update からダウンロードするため、NAT Gateway 経由の通信量とダウンロード時間が増える。stg で所要時間を測り、prd の作業時間の見積もりに使う
+- **dev は再起動まで自動で並列に行われる**（`RebootIfNeeded`）。dev 内で台どうしの依存関係（例：DB サーバーの再起動中にアプリサーバーが起動する）による問題が出る場合は、役割ごとに Window・タスクを分ける
+
 ## 7. stg・prd の起動方式の比較
 
 stg・prd は毎月の作業日時が変わるため、cron の定期スケジュールでは表せない。次の2案を比較する。どちらも適用は `RebootOption=NoReboot` とし、再起動は人が行う。
@@ -190,9 +230,15 @@ stg・prd は毎月の作業日時が変わるため、cron の定期スケジ�
 | 変更の記録・承認 | 締め日と作業日時が同じ PR に残り、prd の承認と一体で管理できる | CloudTrail と Run Command の履歴のみ。作業日時の承認は別のチケット等で行う |
 | 人の事前作業との順序 | 指定時刻に自動で始まるため、業務の停止や事前バックアップが遅れると先に適用が始まる。開始前に作業者が Window を有効にする運用（普段は無効）にすると防げる | 事前作業の完了を確認してから実行できる |
 | パラメータの誤り | `RebootOption=NoReboot` 等が Terraform で固定され、誤りが起きにくい | 実行のたびに指定するため誤りの余地がある。コマンドのテンプレートを手順書で固定する |
-| 実行時間・同時実行の制御 | Window の長さ・終了前の締切（cutoff）、`MaxConcurrency`・`MaxErrors` で制御できる | コマンドごとに `--max-concurrency`・`--max-errors` を指定する |
+| 実行時間・並列実行の制御 | Window の長さ・終了前の締切（cutoff）に加え、並列度（`MaxConcurrency`・`MaxErrors`、[6.3](#63-並列での適用)）が Terraform で固定される | 実行のたびに `--max-concurrency`・`--max-errors` を指定する（[6.3](#63-並列での適用) のコマンドを使う） |
 | 作業日時の急な変更 | PR と apply が必要（prd は承認からやり直し） | 柔軟に変えられる |
 | 予定外の実行 | 1回限りのため、実行後に再び動くことはない。apply を忘れても古い日時で再実行されることはない（その場合は適用されないまま） | なし |
+
+**案1 のスケジュール式について**
+
+- Maintenance Window のスケジュールには、cron 式・rate 式に加えて、1回だけ実行するタイムスタンプ（`at(YYYY-MM-DDThh:mm:ss)`）を指定できる（[AWS 公式：Reference: Cron and rate expressions for Systems Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/reference-cron-and-rate-expressions.html) の「Single-run schedules」と、`create-maintenance-window` の CLI 例）
+- 同ドキュメントには「タイムスタンプは UTC 形式」とある一方、CLI 例では `--schedule-timezone` と組み合わせている。`schedule_timezone = "Asia/Tokyo"` が `at()` に効くかは、stg で作成後に次回の実行予定（`aws ssm get-maintenance-window --window-id <ID> --query NextExecutionTime`）を見て確認する
+- `at()` の扱いに不安がある場合は、年まで指定した cron 式（例：`cron(0 22 18 11 ? 2026)`）でも1回だけの実行になる。cron 式は `schedule_timezone` に従う
 
 **推奨：prd・stg とも案1 を基本とし、案2 は緊急適用と再実行の手段として手順書に用意する。**
 
@@ -234,7 +280,7 @@ stg・prd は毎月の作業日時が変わるため、cron の定期スケジ�
 | `aws_ssm_patch_group` | ベースラインとパッチグループ `pacs-<env>-windows` の紐付け |
 | `aws_ssm_maintenance_window` | `schedule`（dev は cron、stg・prd は `at()`）、`schedule_timezone = "Asia/Tokyo"`、`schedule_offset`（cron のみ）、`enabled` |
 | `aws_ssm_maintenance_window_target` | パッチグループのタグでインスタンスを指定する |
-| `aws_ssm_maintenance_window_task` | `AWS-RunPatchBaseline`（`Operation`・`RebootOption`）。出力先は KMS で暗号化した S3 |
+| `aws_ssm_maintenance_window_task` | `AWS-RunPatchBaseline`（`Operation`・`RebootOption`）。`max_concurrency = "100%"`・`max_errors = "100%"` で全台に並列で適用する（[6.3](#63-並列での適用)）。出力先は KMS で暗号化した S3 |
 
 ### 10.2 環境ごとの変数（例）
 
@@ -301,3 +347,4 @@ patch_rejected_patches   = []
 | 7 | パッチの取得経路 | NAT Gateway 経由で Windows Update に接続するか、WSUS を置くか |
 | 8 | Office 等のアプリケーションのパッチ | 対象とするかを、インストールするソフトが決まった時点で決める |
 | 9 | Window の有効化の切り替え方法 | apply で行うか CLI で行うか（[10.2](#102-環境ごとの変数例)） |
+| 10 | 並列での適用の許容エラー数 | `100%`（失敗した台があっても他の台を止めない）。失敗が多い場合に止めたいなら、`MaxErrors` を台数に応じた値にする（[6.3](#63-並列での適用)） |
