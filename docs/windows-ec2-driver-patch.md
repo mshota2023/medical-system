@@ -18,6 +18,7 @@ EC2 で Windows Server を稼働させる場合の、ドライバーと OS パ�
 - 現時点で Windows EC2 の Terraform 実装はない。Windows EC2 を導入する場合のたたき台とする
 - 方針の決定は要件定義の [U17 運用手順・変更管理・パッチ適用](./requirements.md#u17) で行う
 - 決定後、Terraform で実装したもの（SSM Maintenance Window・Patch Baseline 等）は [infra/README.md](../infra/README.md) に記載する
+- Windows 本体のパッチを Patch Manager のベースラインで制御する月次運用は [windows-ec2-patch-manager.md](./windows-ec2-patch-manager.md) を参照する
 
 ## 2. 対象
 
@@ -177,7 +178,7 @@ prod では、切り戻しに必要な時間を残して「切り戻し判断の
 | 2 | 直前確認と、更新前の状態の記録 | [4.2.2 直前確認](#422-直前確認)の項目を確認する。基準を満たさない場合は更新を中止する |
 | 3 | 事前バックアップ | `AWS-CreateImage`（`NoReboot=false`：インスタンスを一度停止して取得し、ファイルシステムの整合性を保つ）。AMI が `available` になったことを確認してから次に進む |
 | 4 | AWS ドライバー・エージェントの更新 | Run Command `AWS-ConfigureAWSPackage`（`version` を指定して固定する） |
-| 5 | Windows パッチの適用 | Run Command `AWS-RunPatchBaseline` |
+| 5 | Windows パッチの適用 | Run Command `AWS-RunPatchBaseline`（ベースライン・再起動の制御は [windows-ec2-patch-manager.md](./windows-ec2-patch-manager.md#6-stgprd-の運用日付で限定再起動は手動)） |
 | 6 | 再起動と正常性確認 | 「[5.1 切り戻しの判断基準](#51-切り戻しの判断基準)」の項目を確認する |
 | 7 | 判定 | 問題なし → 業務を再開する。問題あり、または判断の期限を過ぎても解決しない → [5 章](#5-切り戻し手順方式-b)の切り戻しを行う |
 
